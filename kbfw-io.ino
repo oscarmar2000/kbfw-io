@@ -1,45 +1,114 @@
-// Simple demo of three threads.
-// LED blink thread, count thread, and main thread.
 
-#include "ChRt.h"
+#include <map>
+#include <array>
+#include <memory>
+#include <cassert>
+#include <algorithm>
+
 #include <Keyboard.h>
-
-//#include "HID-Project.h"
-
+#include "ChRt.h"
 #include "HID_Buttons.h"
 
- 
-#if 0
+#define WIFI_EN 0
+
+#if WIFI_EN
 #include <SPI.h>
 #include <WiFi101.h>
 #include <driver/source/nmasic.h>
 #endif
 
-#include <map>
+// #define KEY_MENU      0xED
 
+//------------------------------------------------------------------------------
+// Classes and templates
+//------------------------------------------------------------------------------
 
-class MyKeyboardKey : public KeyboardButton
-{
-    int mK;
+template<typename Type, int N, int M>
+class matrix {
+    std::array<std::array<Type, M>, N> mat{};
+
   public:
-    MyKeyboardKey(int key)
-      : KeyboardButton(key)
-      , mK(key)
+
+    static constexpr int w = M;
+    static constexpr int h = N;
+
+    constexpr matrix() = default;
+
+    constexpr matrix(std::initializer_list<std::array<Type, M>> m)
     {
+      int i = 0;
+      for (auto &r : m)
+      {
+        mat[i] = r;
+        i++;
+      }
     }
 
-    int getKey()
+    const std::array<Type, M> &operator[](int R) const
     {
-      return mK;
+      return mat[R];
     }
 
+    constexpr Type get(int x, int y)
+    {
+      return mat.at(x).at(y);
+    }
+
+    constexpr void set(int x, int y, Type v)
+    {
+      mat.at(x).at(y) = v;
+    }
 };
 
 
-class MacroAbs {
+class MyKeyboardKey
+{
+    std::unique_ptr<KeyboardButton> mBtn{};
+    int mK{};
 
   public:
-    virtual void call() = 0;
+    MyKeyboardKey() = default;
+
+    MyKeyboardKey& operator=(const MyKeyboardKey &other)
+    {
+      mK = other.mK;
+      mBtn = std::make_unique<KeyboardButton>(mK);
+
+      return *this;
+    }
+
+    MyKeyboardKey& operator=(MyKeyboardKey &&other)
+    {
+      mK = other.mK;
+      mBtn = std::move(other.mBtn);
+
+      return *this;
+    }
+
+    MyKeyboardKey(MyKeyboardKey && other)
+      : mBtn(std::move(other.mBtn))
+      , mK(other.mK) {}
+
+    MyKeyboardKey(int key)
+      : mBtn(std::make_unique<KeyboardButton>(key))
+      , mK(key) {}
+
+    void set(bool lv) const
+    {
+      mBtn.get()->set(lv);
+    }
+
+    int getKey() const
+    {
+      return mK;
+    }
+};
+
+
+class MacroAbs
+{
+  public:
+    virtual bool call() = 0;
 
 };
 
@@ -48,41 +117,108 @@ class Macro : public MacroAbs
 {
     L mFunc;
   public:
-    Macro(L f) : mFunc(f)
+    Macro(L &&f) : mFunc(std::move(f))
     {}
 
-    void call() override
+    bool call() override
     {
-      mFunc();
+      return mFunc();
     }
 };
 
-std::map<int, MacroAbs*> macros;
+class MacroHdlr
+{
+    std::map<int, std::unique_ptr<MacroAbs>> macros{};
+    std::map<int, bool> triggers{};
 
-bool m0_trig = false;
-bool m1_trig = false;
-bool m2_trig = false;
-bool m3_trig = false;
-bool m4_trig = false;
-bool m5_trig = false;
-bool m6_trig = false;
-bool m7_trig = false;
-bool m8_trig = false;
-bool m9_trig = false;
+  public:
 
-// LED_BUILTIN pin on Arduino is usually pin 13.
-// #define KEY_MENU      0xED
+    template<char K, typename Fn>
+    void addMacro(Fn macro)
+    {
+      macros[K] = std::make_unique<Macro<Fn>>((std::move(macro)));
+      triggers[K] = false;
+    }
 
+    bool trigger(int ch)
+    {
+      if (triggers.count(ch) > 0)
+      {
+        triggers[ch] = true;
+        return true;
+      }
+      return false;
+    }
 
-MyKeyboardKey *keyboard[15][5];
-MyKeyboardKey *functions[12];
-MyKeyboardKey *special[10];
+    void execMacros()
+    {
+      std::find_if(triggers.begin(), triggers.end(), [this](auto & m_p) {
+        if (m_p.second)
+        { 
+          m_p.second = macros[m_p.first]->call();
+          return true;
+        }
+        return false;
+      });
+    }
+};
 
-const uint8_t gray_code[16] = { 0,  1,  3,  2,
-                                6,  7,  5,  4,
-                                12, 13, 15, 14,
-                                10, 11,  9,  8
-                              };
+//------------------------------------------------------------------------------
+// Global variables
+//------------------------------------------------------------------------------
+
+static MacroHdlr macroHandler;
+
+static const matrix<MyKeyboardKey, 15, 5> keyboardM
+{ // row0            row1          row2             row3               row4
+  { (KEY_ESC)      , (KEY_TAB)   , (KEY_CAPS_LOCK), (KEY_LEFT_SHIFT) , (KEY_LEFT_CTRL)},
+  { ('1')          , ('q')       , ('a')          , ('z')            , (KEY_LEFT_GUI)},
+  { ('2')          , ('w')       , ('s')          , ('x')            , (KEY_LEFT_ALT)},
+  { ('3')          , ('e')       , ('d')          , ('c')            , (0)},
+  { ('4')          , ('r')       , ('f')          , ('v')            , (0)},
+  { ('5')          , ('t')       , ('g')          , ('b')            , (' ')},
+  { ('6')          , ('y')       , ('h')          , ('n')            , (0)},
+  { ('7')          , ('u')       , ('j')          , ('m')            , (0)},
+  { ('8')          , ('i')       , ('k')          , (',')            , (0)},
+  { ('9')          , ('o')       , ('l')          , ('.')            , (KEY_RIGHT_ALT)},
+  { ('0')          , ('p')       , (';')          , ('/')            , (0)},
+  { ('-')          , ('[')       , ('\'')         , (0)              , (KEY_MENU)},
+  { ('=')          , (']')       , (0)            , (KEY_RIGHT_SHIFT), (KEY_LEFT_ARROW)},
+  { (KEY_BACKSPACE), ('\\')      , (KEY_RETURN)   , (KEY_UP_ARROW)   , (KEY_DOWN_ARROW)},
+  { ('`')          , (KEY_DELETE), (KEY_PAGE_UP)  , (KEY_PAGE_DOWN)  , (KEY_RIGHT_ARROW)},
+};
+
+static const std::array<MyKeyboardKey, 12> functions =
+{
+  KEY_F1, KEY_F2, KEY_F3, KEY_F4,  KEY_F5,  KEY_F6,
+  KEY_F7, KEY_F8, KEY_F9, KEY_F10, KEY_F11, KEY_F12
+};
+
+static const std::array<MyKeyboardKey, 10> special = {KEY_PRINTSCR};
+
+static constexpr std::array<uint8_t, 16> gray_code =
+{  0,  1,  3,  2,
+   6,  7,  5,  4,
+  12, 13, 15, 14,
+  10, 11,  9,  8
+};
+
+static constexpr std::array ROW_IN{15, 16, 18, 19, 12};
+static constexpr std::array MUX_OUT{5, 6, 10, 11};
+static constexpr int FN_COL = 11;
+static constexpr int FN_ROW = 4;
+
+//------------------------------------------------------------------------------
+// Local functions
+//------------------------------------------------------------------------------
+
+void setScanline(const char col)
+{
+  digitalWrite(MUX_OUT[0], ((col & 1) == 0) ? LOW : HIGH);
+  digitalWrite(MUX_OUT[1], ((col & 2) == 0) ? LOW : HIGH);
+  digitalWrite(MUX_OUT[2], ((col & 4) == 0) ? LOW : HIGH);
+  digitalWrite(MUX_OUT[3], ((col & 8) == 0) ? LOW : HIGH);
+}
 
 //------------------------------------------------------------------------------
 // thread 1 - high priority for blinking LED.
@@ -121,70 +257,64 @@ static THD_FUNCTION(Thread2, arg) {
   {
 
     // Check if Fn Key is pressed
-    int c = 11;
-    digitalWrite(5,  ((c & 1) == 0) ? LOW : HIGH);
-    digitalWrite(6,  ((c & 2) == 0) ? LOW : HIGH);
-    digitalWrite(10, ((c & 4) == 0) ? LOW : HIGH);
-    digitalWrite(11, ((c & 8) == 0) ? LOW : HIGH);
+    setScanline(FN_COL);
 
-    bool fn = (digitalRead(12) == HIGH);
+    bool fn = (digitalRead(ROW_IN[FN_ROW]) == HIGH);
 
     for (int i = 1; i < 16; i++)
     {
-      int m = gray_code[i];
+      const int m = gray_code[i]; // 1 - 15
 
       noInterrupts();
 
-      digitalWrite(5,  ((m & 1) == 0) ? LOW : HIGH);
-      digitalWrite(6,  ((m & 2) == 0) ? LOW : HIGH);
-      digitalWrite(10, ((m & 4) == 0) ? LOW : HIGH);
-      digitalWrite(11, ((m & 8) == 0) ? LOW : HIGH);
+      setScanline(m);
 
-
-      int j = m - 1;
-      if (fn)
+      int j = m - 1;  // 0 - 14
+      if (fn) // function key pressed
       {
         if (j >= 1 && j <= 12) //set fX keys
-          functions[j - 1]->set(digitalRead(15) == HIGH);
+          functions[j - 1].set(digitalRead(ROW_IN[0]) == HIGH);
 
-        if (digitalRead(16) == HIGH)
+        //check macro keys
+        if (digitalRead(ROW_IN[1]) == HIGH)
         {
-          if (keyboard[j][1] != nullptr)
-            if (macros.find(keyboard[j][1]->getKey()) != macros.end())
+          if (keyboardM[j][1].getKey() != 0)
+            if (macroHandler.trigger(keyboardM[j][1].getKey()))
             {
-
-              macros[keyboard[j][1]->getKey()]->call();
               interrupts();
               chThdSleepMilliseconds(50);
               continue;
             }
         }
 
-        if (keyboard[j][4] != nullptr && keyboard[j][4]->getKey() == KEY_MENU)
+        //special keys
+        if (keyboardM[j][4].getKey() != 0 && keyboardM[j][4].getKey() == KEY_MENU)
         {
-          special[0]->set(digitalRead(12) == HIGH);
+          // print screen
+          special[0].set(digitalRead(ROW_IN[4]) == HIGH);
+          interrupts();
+          chThdSleepMilliseconds(50);
+          continue;
         }
-
       }
       else
       {
-        if (keyboard[j][0] != nullptr)
+        // check first row
+        if (keyboardM[j][0].getKey() != 0)
         {
-          keyboard[j][0]->set(digitalRead(15) == HIGH);
+          keyboardM[j][0].set(digitalRead(ROW_IN[0]) == HIGH);
         }
+        // clear fX keys
         if (j >= 1 && j <= 12)
-          functions[j - 1]->set(false);
+          functions[j - 1].set(false);
       }
 
-
-      if (keyboard[j][1] != nullptr)
-        keyboard[j][1]->set(digitalRead(16) == HIGH);
-      if (keyboard[j][2] != nullptr)
-        keyboard[j][2]->set(digitalRead(18) == HIGH);
-      if (keyboard[j][3] != nullptr)
-        keyboard[j][3]->set(digitalRead(19) == HIGH);
-      if (keyboard[j][4] != nullptr)
-        keyboard[j][4]->set(digitalRead(12) == HIGH);
+      // check other rows
+      for (int i = 1; i<=4; i++)
+      {
+        if (keyboardM[j][i].getKey() != 0)
+          keyboardM[j][i].set(digitalRead(ROW_IN[i]) == HIGH);
+      }
 
       interrupts();
     }
@@ -206,24 +336,24 @@ void chSetup() {
 }
 //------------------------------------------------------------------------------
 void setup() {
-  pinMode(5, OUTPUT);
-  pinMode(6, OUTPUT);
-  pinMode(10, OUTPUT);
-  pinMode(11, OUTPUT);
 
-  pinMode(12, INPUT_PULLDOWN);
-  pinMode(15, INPUT_PULLDOWN);
-  pinMode(16, INPUT_PULLDOWN);
-  pinMode(18, INPUT_PULLDOWN);
-  pinMode(19, INPUT_PULLDOWN);
+  for (auto &o : MUX_OUT)
+  {
+    pinMode(o, OUTPUT);
+  }
+
+  for (auto &in : ROW_IN)
+  {
+    pinMode(in, INPUT_PULLDOWN);
+  }
 
   Keyboard.begin();
 
   delay(2000);
   Keyboard.print("ohayou!");
+  
 
-
-#if 0
+#if WIFI_EN
   //Configure pins for Adafruit ATWINC1500 Feather
   WiFi.setPins(8, 7, 4, 2);
 
@@ -269,136 +399,47 @@ void setup() {
     // scan for existing networks:
     Keyboard.println("Scanning available networks...");
     listNetworks();
-
   }
 
 #endif
 
-  macros['p'] = new Macro([]() {
-    m0_trig = true;
+  // example macros
+  macroHandler.addMacro<'p'>([] {
+    Keyboard.print("macro0");
+    return false;
   });
-  macros['q'] = new Macro([]() {
-    m1_trig = true;
-  });
-  macros['w'] = new Macro([]() {
-    m2_trig = true;
-  });
-  macros['e'] = new Macro([]() {
-    m3_trig = true;
-  });
-  macros['r'] = new Macro([]() {
-    m4_trig = true;
+  macroHandler.addMacro<'q'>([] {
+    Keyboard.print("macro1");
+    return false;
   });
 
-  memset(keyboard, 0, sizeof(keyboard));
-  memset(functions, 0, sizeof(functions));
-  memset(special, 0, sizeof(special));
+  // multi state macro
+  macroHandler.addMacro<'w'>([cnt = 0]() mutable {
+    Keyboard.print("macro2");
+    Keyboard.write(KEY_TAB);
+    if (cnt++ == 2)
+    {
+      cnt = 0;
+      return false;
+    }
+    else
+      return true;
+  });
+  
+  macroHandler.addMacro<'e'>([] {
+    Keyboard.print("macro3");
+    return false;
+  });
+  macroHandler.addMacro<'r'>([] {
+    Keyboard.print("macro4");
+    return false;
+  });
+  macroHandler.addMacro<'t'>([] {
+    Keyboard.print("macro5");
+    return false;
+  });
 
-  keyboard[0][0] = new MyKeyboardKey(KEY_ESC);
-  keyboard[0][1] = new MyKeyboardKey(KEY_TAB);
-  keyboard[0][2] = new MyKeyboardKey(KEY_CAPS_LOCK); // hyper
-  keyboard[0][3] = new MyKeyboardKey(KEY_LEFT_SHIFT);
-  keyboard[0][4] = new MyKeyboardKey(KEY_LEFT_CTRL);
-
-  keyboard[1][0] = new MyKeyboardKey('1');
-  keyboard[1][1] = new MyKeyboardKey('q');
-  keyboard[1][2] = new MyKeyboardKey('a');
-  keyboard[1][3] = new MyKeyboardKey('z');
-  keyboard[1][4] = new MyKeyboardKey(KEY_LEFT_GUI); // super
-
-  keyboard[2][0] = new MyKeyboardKey('2');
-  keyboard[2][1] = new MyKeyboardKey('w');
-  keyboard[2][2] = new MyKeyboardKey('s');
-  keyboard[2][3] = new MyKeyboardKey('x');
-  keyboard[2][4] = new MyKeyboardKey(KEY_LEFT_ALT);
-
-  keyboard[3][0] = new MyKeyboardKey('3');
-  keyboard[3][1] = new MyKeyboardKey('e');
-  keyboard[3][2] = new MyKeyboardKey('d');
-  keyboard[3][3] = new MyKeyboardKey('c');
-  //  keyboard[3][4] = new MyKeyboardKey();
-
-  keyboard[4][0] = new MyKeyboardKey('4');
-  keyboard[4][1] = new MyKeyboardKey('r');
-  keyboard[4][2] = new MyKeyboardKey('f');
-  keyboard[4][3] = new MyKeyboardKey('v');
-  //  keyboard[4][4] = new MyKeyboardKey();
-
-  keyboard[5][0] = new MyKeyboardKey('5');
-  keyboard[5][1] = new MyKeyboardKey('t');
-  keyboard[5][2] = new MyKeyboardKey('g');
-  keyboard[5][3] = new MyKeyboardKey('b');
-  keyboard[5][4] = new MyKeyboardKey(' ');
-
-  keyboard[6][0] = new MyKeyboardKey('6');
-  keyboard[6][1] = new MyKeyboardKey('y');
-  keyboard[6][2] = new MyKeyboardKey('h');
-  keyboard[6][3] = new MyKeyboardKey('n');
-  //  keyboard[6][4] = new MyKeyboardKey();
-
-  keyboard[7][0] = new MyKeyboardKey('7');
-  keyboard[7][1] = new MyKeyboardKey('u');
-  keyboard[7][2] = new MyKeyboardKey('j');
-  keyboard[7][3] = new MyKeyboardKey('m');
-  //  keyboard[7][4] = new MyKeyboardKey();
-
-  keyboard[8][0] = new MyKeyboardKey('8');
-  keyboard[8][1] = new MyKeyboardKey('i');
-  keyboard[8][2] = new MyKeyboardKey('k');
-  keyboard[8][3] = new MyKeyboardKey(',');
-  //  keyboard[8][4] = new MyKeyboardKey();
-
-  keyboard[9][0] = new MyKeyboardKey('9');
-  keyboard[9][1] = new MyKeyboardKey('o');
-  keyboard[9][2] = new MyKeyboardKey('l');
-  keyboard[9][3] = new MyKeyboardKey('.');
-  keyboard[9][4] = new MyKeyboardKey(KEY_RIGHT_ALT);
-
-  keyboard[10][0] = new MyKeyboardKey('0');
-  keyboard[10][1] = new MyKeyboardKey('p');
-  keyboard[10][2] = new MyKeyboardKey(';');
-  keyboard[10][3] = new MyKeyboardKey('/');
-  //  keyboard[10][4] = new MyKeyboardKey(KEY_RIGHT_GUI); //// FN
-
-  keyboard[11][0] = new MyKeyboardKey('-');
-  keyboard[11][1] = new MyKeyboardKey('[');
-  keyboard[11][2] = new MyKeyboardKey('\'');
-  //  keyboard[11][3] = new MyKeyboardKey();
-  keyboard[11][4] = new MyKeyboardKey(KEY_MENU); /// WIN
-
-  keyboard[12][0] = new MyKeyboardKey('=');
-  keyboard[12][1] = new MyKeyboardKey(']');
-  //  keyboard[12][2] = new MyKeyboardKey();
-  keyboard[12][3] = new MyKeyboardKey(KEY_RIGHT_SHIFT);
-  keyboard[12][4] = new MyKeyboardKey(KEY_LEFT_ARROW);
-
-  keyboard[13][0] = new MyKeyboardKey(KEY_BACKSPACE);
-  keyboard[13][1] = new MyKeyboardKey('\\');
-  keyboard[13][2] = new MyKeyboardKey(KEY_RETURN);
-  keyboard[13][3] = new MyKeyboardKey(KEY_UP_ARROW);
-  keyboard[13][4] = new MyKeyboardKey(KEY_DOWN_ARROW);
-
-  keyboard[14][0] = new MyKeyboardKey('`');
-  keyboard[14][1] = new MyKeyboardKey(KEY_DELETE);
-  keyboard[14][2] = new MyKeyboardKey(KEY_PAGE_UP);
-  keyboard[14][3] = new MyKeyboardKey(KEY_PAGE_DOWN);
-  keyboard[14][4] = new MyKeyboardKey(KEY_RIGHT_ARROW);
-
-  functions[0] = new MyKeyboardKey(KEY_F1);
-  functions[1] = new MyKeyboardKey(KEY_F2);
-  functions[2] = new MyKeyboardKey(KEY_F3);
-  functions[3] = new MyKeyboardKey(KEY_F4);
-  functions[4] = new MyKeyboardKey(KEY_F5);
-  functions[5] = new MyKeyboardKey(KEY_F6);
-  functions[6] = new MyKeyboardKey(KEY_F7);
-  functions[7] = new MyKeyboardKey(KEY_F8);
-  functions[8] = new MyKeyboardKey(KEY_F9);
-  functions[9] = new MyKeyboardKey(KEY_F10);
-  functions[10] = new MyKeyboardKey(KEY_F11);
-  functions[11] = new MyKeyboardKey(KEY_F12);
-
-  special[0] = new MyKeyboardKey(KEY_PRINTSCR);
-
+  // initialize Chibi OS
   chBegin(chSetup);
   // chBegin() resets stacks and should never return.
   while (true) {}
@@ -407,33 +448,15 @@ void setup() {
 
 // Runs at NORMALPRIO.
 void loop() {
+  // exec active macros
+  macroHandler.execMacros();
 
-
-  //   Keyboard.begin(9600);
-  //// Wait for USB Keyboard.
-  //  while (!Keyboard) {}
-  //
-  //  // Sleep for one second.
-  //  chThdSleepMilliseconds(200);
-  //
-
-  if (m0_trig)
-  {
-    m0_trig = false;
-    Keyboard.print("macro0");
-  }
-  if (m1_trig)
-  {
-    m1_trig = false;
-    Keyboard.print("macro1");
-  }
-
+  // sleep thread
   chThdSleepMilliseconds(200);
-
 }
 
 
-#if 0
+#if WIFI_EN
 void printMacAddress() {
   // the MAC address of your WiFi shield
   byte mac[6];
